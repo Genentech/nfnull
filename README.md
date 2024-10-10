@@ -5,7 +5,7 @@ This repository is for exploring approximations to difficult null distributions 
 As we are not yet on PyPi, to install please follow this recipe:
 
 ```
-git clone git@ssh.code.roche.com:HUG/nfnull.git
+git clone git@github.com:Genentech/nfnull.git
 conda env -n 'nfnull' python=3.11.1
 conda activate nfnull
 pip install zuko torch torchaudio torchvision scipy numpy pandas
