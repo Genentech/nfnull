@@ -12,8 +12,9 @@ from scipy.integrate import cumulative_trapezoid
 from scipy.ndimage import uniform_filter1d
 from zuko.transforms import MonotonicRQSTransform
 
-## recall: class MonotonicRQSTransform(Transform)
 class ExtendedMonotonicRQSTransform(MonotonicRQSTransform):
+    """Extends MonotonicRQSTransform to allow for larger domain without passing argument
+    """
     domain = constraints.real
     codomain = constraints.real
     bijective = True
@@ -37,8 +38,9 @@ class ExtendedMonotonicRQSTransform(MonotonicRQSTransform):
            **kwargs,
        )
         
-## recall: class NSF(MAF)
 class ExtendedNSF(zuko.flows.autoregressive.MAF):
+    """Wrapper to use ExtendedMonotonicRQSTransform
+    """
     def __init__(
         self,
         features: int,
@@ -55,6 +57,23 @@ class ExtendedNSF(zuko.flows.autoregressive.MAF):
         )
 
 class Rescale():
+    """Scales new data according to mean and SD of some data X
+
+    Attributes
+    ----------
+    mean_x : float
+        mean of X
+    std_x : float
+        standard deviation of X
+
+    Methods
+    -------
+    forward(x)
+        scales data according to properties of X
+    reverse(z)
+        undoes scaling
+    """     
+    
     def __init__(self, x):
         self.mean_x = np.mean(x)
         self.std_x = np.std(x) 
@@ -68,6 +87,63 @@ class Rescale():
         return x
 
 class NFNull():
+    """Methods for using normalizing flows to learn, sample from and compute p-values for distributions.
+
+    Attributes
+    ----------
+    x : array
+        data to be learned
+    rescale :
+        object of class Rescale, used to center and standardize before training
+    mu_x : float
+        mean of x
+    std_x : float
+        standard deviation of x
+    min_support : float
+        minimum of the domain of x
+    max_support : float
+        maximum of the domain of x
+    features : int
+        number of features (dimensionality of x)
+    transforms : int
+        number of transformations
+    hidden_features : tuple
+        size of hidden features for one transformation
+    bins : int
+        number of bins to discretize x into
+    passes : int
+        number of passes (2 indicates the use of coupling layers)
+    min_grid : float
+        minimum for grid-based CDF estimation
+    max_grid : float
+        maximum for grid-based CDF estimation
+    grid : array
+        grid for grid-based CDF estimation
+    grid_points : int
+        number of grid points for grid-based CDF estimation
+    flow : Zuko flow
+        flow to learn x
+    pdf : array
+        computed probability density function
+    cdf : array
+        computed cumulative distribution function
+    z : array
+        x after centering and scaling by standard deviation
+
+    Methods
+    -------
+    fit_pdf
+        trains the flow, which learns a density function, and estimates a CDF
+    get_cdf
+        returns the estimated CDF (not advised for tail probabilities)
+    log_prob
+        returns the log probability under the flow of a given data point
+    sample
+        sample new data points from trained flow
+    p_value
+        computes the tail probability for a data point
+    """
+    
     def __init__(
         self, x, flow='NSF', min_support=float('-inf'), max_support=float('inf'),
         features=1, transforms=2, hidden_features=(64, 64, 64, 64), bins=16, passes=2,
@@ -105,6 +181,28 @@ class NFNull():
         self, batch_size=64, lr=1e-2, n_iter=2000, verbose=False, tol=1e-4, reg_lambda=5e-3,
         tail_lambda=5e-2, t_df=3,
     ):
+        """Fits the normalizing flow, which learns a density function.
+
+        Parameters
+        ----------
+        batch_size : int
+            batch size for flow training
+        lr : float
+            learning rate
+        n_iter : int
+            number of epochs for flow training
+        verbose : bool
+            whether to print loss per epoch
+        tol : float
+            tolerance for early stopping
+        reg_lambda : float
+            magnitude of L1 penalty
+        tail_lambda : float
+            scaling factor for T prior contribution to loss
+        t_df : int
+            number of degrees of freedom for T prior
+        """
+        
         self.z = torch.tensor(self.rescale.forward(self.x))
         flow = self.flow
         trainset = data.TensorDataset(self.z)
@@ -137,6 +235,19 @@ class NFNull():
             self.cdf = self.get_cdf(n=self.grid_points)
 
     def get_cdf(self, n=int(1e5)):
+        """Returns CDF
+
+        Parameters
+        ----------
+        n : int
+            number of samples from flow with which to estimate CDF
+
+        Returns
+        -------
+        xcdf : array
+            CDF evaluated along points
+        """
+        
         x = self.sample(n)
         xcdf = np.zeros(self.grid.shape[0])
         for i in range(self.grid.shape[0]):
@@ -145,15 +256,57 @@ class NFNull():
         return xcdf
     
     def log_prob(self, x):
+        """Returns log probability
+
+        Parameters
+        ----------
+        x : float
+            data point to score
+
+        Returns
+        -------
+        flow.log_prob : float
+            log of probability density function value for x
+        """
+        
         return self.flow().log_prob(x)
 
     def sample(self, n=100000000):
+        """Samples points from flow
+
+        Parameters
+        ----------
+        n : int
+            number of samples
+
+        Returns
+        -------
+        x_hat : array
+            n samples from flow
+        """
+        
         x_hat_centered = self.flow().sample((n,)).detach().cpu().numpy()
         x_hat = self.rescale.reverse(x_hat_centered)
         x_hat = np.clip(x_hat, self.min_support, self.max_support)
         return x_hat.squeeze()
     
     def p_value(self, x, greater_than=True, n=100000000):
+        """Samples points from flow
+
+        Parameters
+        ----------
+        x : float
+            data point for estimating tail probability P(X <= x)
+        greater_than : bool
+            computes tail probality as greater than (True) or less than (False)
+        n : number of samples from flow for computing p-value
+
+        Returns
+        -------
+        p_value : float
+            tail probability P(X <= x)
+        """
+        
         if self.features > 1:
             raise NotImplementedError('Integration over >1 features not yet supported, please use nfnull.sample() and define an integration scheme.')
         if greater_than:
