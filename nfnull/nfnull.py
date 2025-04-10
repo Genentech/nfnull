@@ -247,7 +247,7 @@ class NFNull():
         self, x, flow='NSF', min_support=float('-inf'), max_support=float('inf'),
         features=1, context=0, transforms=2, hidden_features=(64, 64, 64, 64), bins=16,
         passes=0, min_grid=None, max_grid=None, grid=None, grid_points=100000,
-        prescaled=False, nu=8.0
+        prescaled=True, nu=8.0
     ):
         self.x = x
         self.rescale = Rescale(x)        
