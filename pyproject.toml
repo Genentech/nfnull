@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nfnull"
+version = "0.0.1"
+description = "Null density estimation using normalizing flows"
+authors = [
+    {name = "Kipper Fletez-Brant", email = "cafletezbrant@gmail.com"}
+]
+readme = "README.md"
+license = {file = "license.txt"}
+requires-python = ">=3.6"
+
+[project.urls]
+"Homepage" = "https://github.com/Genentech/nfnull/tree/main"
+"Bug Tracker" = "https://github.com/Genentech/nfnull/issues"
+
+[tool.setuptools]
+packages = ["nfnull"] 

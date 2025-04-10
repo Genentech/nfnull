@@ -7,10 +7,12 @@ import torch.utils.data as data
 import torch.distributions as D
 
 from torch import BoolTensor, LongTensor, Size, Tensor
-from torch.distributions import Distribution, Transform, constraints
+from torch.distributions import Distribution, Transform, constraints, StudentT, Independent
 from scipy.integrate import cumulative_trapezoid
 from scipy.ndimage import uniform_filter1d
 from zuko.transforms import MonotonicRQSTransform
+from zuko.flows import Flow, MaskedAutoregressiveTransform
+from zuko.lazy import UnconditionalDistribution
 
 class ExtendedMonotonicRQSTransform(MonotonicRQSTransform):
     """Extends MonotonicRQSTransform to allow for larger domain without passing argument
@@ -56,6 +58,98 @@ class ExtendedNSF(zuko.flows.autoregressive.MAF):
             **kwargs,
         )
 
+class DiagStudentT(Independent):
+    """Multivariate Student-T distribution with diagonal covariance matrix"""
+    def __init__(self, loc=0., scale=1., ndims=1, nu=5.0):
+        self.nu = nu
+        super().__init__(StudentT(nu, loc, scale), int(ndims))
+
+    def __repr__(self) -> str:
+        return "Diag" + repr(self.base_dist)
+
+    def expand(self, batch_shape: Size, new: Distribution = None) -> Distribution:
+        new = self._get_checked_instance(DiagStudentT, new)
+        return super().expand(batch_shape, new)
+
+    def __get_nu__(self):
+        return self.nu
+        
+class TMAF(Flow):
+    """Creates a masked autoregressive flow (MAF) with Student-T base distribution.
+
+    References:
+        | Tails of Lipschitz Triangular Flows (Jaini et al., 2019)
+        | https://arxiv.org/abs/1907.04481
+
+    Arguments:
+        features: The number of features.
+        context: The number of context features.
+        transforms: The number of autoregressive transformations.
+        randperm: Whether features are randomly permuted between transformations or not.
+            If :py:`False`, features are in ascending (descending) order for even
+            (odd) transformations.
+        nu: Degrees of freedom for the Student-T base distribution.
+        kwargs: Keyword arguments passed to :class:`MaskedAutoregressiveTransform`.
+    """
+
+    def __init__(
+        self,
+        features: int,
+        context: int = 0,
+        transforms: int = 3,
+        randperm: bool = False,
+        nu: float = 8.,
+        **kwargs,
+    ):
+        orders = [
+            torch.arange(features),
+            torch.flipud(torch.arange(features)),
+        ]
+
+        transforms = [
+            MaskedAutoregressiveTransform(
+                features=features,
+                context=context,
+                order=torch.randperm(features) if randperm else orders[i % 2],
+                **kwargs,
+            )
+            for i in range(transforms)
+        ]
+
+        base = UnconditionalDistribution(
+            DiagStudentT,
+            torch.zeros(features),
+            torch.ones(features),
+            features,
+            torch.tensor(nu),
+            buffer=False,
+        )
+
+        super().__init__(transforms, base)
+
+class TNSF(TMAF):
+    """Neural Spline Flow with Student-T base distribution"""
+    def __init__(
+        self,
+        features: int,
+        context: int = 0,
+        bins: int = 8,
+        transforms: int = 3,
+        hidden_features: tuple = (64, 64, 64, 64),
+        nu: float = 8.,
+        **kwargs,
+    ):
+        super().__init__(
+            features=features,
+            context=context,
+            transforms=transforms,
+            univariate=ExtendedMonotonicRQSTransform,
+            shapes=[(bins,), (bins,), (bins - 1,)],
+            hidden_features=hidden_features,
+            nu=nu,
+            **kwargs,
+        )
+
 class Rescale():
     """Scales new data according to mean and SD of some data X
 
@@ -87,7 +181,8 @@ class Rescale():
         return x
 
 class NFNull():
-    """Methods for using normalizing flows to learn, sample from and compute p-values for distributions.
+    """Methods for using normalizing flows to learn, sample from and compute 
+    p-values for distributions.
 
     Attributes
     ----------
@@ -129,6 +224,10 @@ class NFNull():
         computed cumulative distribution function
     z : array
         x after centering and scaling by standard deviation
+    prescaled : bool
+        True if the data being modeled has been scaled already
+    nu : float
+        degrees of freedom for Student-T base distribution
 
     Methods
     -------
@@ -146,8 +245,9 @@ class NFNull():
     
     def __init__(
         self, x, flow='NSF', min_support=float('-inf'), max_support=float('inf'),
-        features=1, transforms=2, hidden_features=(64, 64, 64, 64), bins=16, passes=2,
-        min_grid=None, max_grid=None, grid=None, grid_points=100000, 
+        features=1, context=0, transforms=2, hidden_features=(64, 64, 64, 64), bins=16,
+        passes=0, min_grid=None, max_grid=None, grid=None, grid_points=100000,
+        prescaled=False, nu=8.0
     ):
         self.x = x
         self.rescale = Rescale(x)        
@@ -160,13 +260,23 @@ class NFNull():
         self.max_grid = np.array(max_grid)
         self.grid = grid        
         self.grid_points = grid_points
+        
+        # Flow selection
         if flow == 'NSF':
             self.flow = ExtendedNSF(
-                features=features, transforms=transforms, hidden_features=hidden_features, 
+                features=features, context=context,
+                transforms=transforms, hidden_features=hidden_features, 
                 bins=bins, passes=passes
+            )
+        elif flow == 'TNSF':
+            self.flow = TNSF(
+                features=features, context=context,
+                transforms=transforms, hidden_features=hidden_features, 
+                bins=bins, nu=nu
             )
         else:
             self.flow = flow
+            
         if min_grid is None:
             self.min_grid = np.maximum((x.min() - 5*self.std_x), self.min_support)
             self.max_grid = np.minimum((x.max() + 5*self.std_x), self.max_support)
@@ -176,12 +286,15 @@ class NFNull():
         self.pdf = None
         self.cdf = None
         self.z = None
+        self.prescaled = prescaled
 
     def fit_pdf(
         self, batch_size=64, lr=1e-2, n_iter=2000, verbose=False, tol=1e-4, reg_lambda=5e-3,
-        tail_lambda=5e-2, t_df=3,
+        tail_lambda=5e-2, t_df=3, weight_decay=0,
     ):
-        """Fits the normalizing flow, which learns a density function.
+        """Fits Gaussian normalizing flow, which learns a density function. Regularization options
+           include l2 penalty on parameters, t-distribution PDF (to encourage longer tails)
+           and weight decay
 
         Parameters
         ----------
@@ -202,18 +315,20 @@ class NFNull():
         t_df : int
             number of degrees of freedom for T prior
         """
-        
-        self.z = torch.tensor(self.rescale.forward(self.x))
+        if not self.prescaled:
+            self.z = torch.tensor(self.rescale.forward(self.x))
         flow = self.flow
         trainset = data.TensorDataset(self.z)
         trainloader = data.DataLoader(trainset, batch_size=batch_size, shuffle=True)
-        optimizer = torch.optim.Adam(flow.parameters(), lr=lr)
+        optimizer = torch.optim.Adam(flow.parameters(), lr=lr, weight_decay=weight_decay)
         old_loss = float('inf')
         for epoch in range(n_iter):
             losses = []    
             for hh in trainloader:
                 loss = -flow().log_prob(hh[0]).mean() 
-                loss += reg_lambda * torch.tensor([torch.sum(t**2) for t in list(flow.parameters())]).sum()
+                loss += reg_lambda * torch.tensor(
+                    [torch.sum(t**2) for t in list(flow.parameters())]
+                ).sum()
                 loss -= tail_lambda * D.StudentT(df=t_df).log_prob(hh[0]).sum()
                 loss.backward()    
                 optimizer.step()
@@ -227,7 +342,10 @@ class NFNull():
             else:
                 old_loss = loss
         self.flow = flow
-        grid_centered = torch.tensor(self.rescale.forward(self.grid))
+        if self.prescaled:
+            grid_centered = torch.tensor(self.grid)
+        else:
+            grid_centered = torch.tensor(self.rescale.forward(self.grid))
         if self.features == 1:
             log_pdfs = self.flow().log_prob(grid_centered.reshape(self.grid_points, 1))            
             pdfs = uniform_filter1d(torch.exp(log_pdfs).detach().cpu().numpy(), size=500)
@@ -286,7 +404,10 @@ class NFNull():
         """
         
         x_hat_centered = self.flow().sample((n,)).detach().cpu().numpy()
-        x_hat = self.rescale.reverse(x_hat_centered)
+        if self.prescaled:
+            x_hat = x_hat_centered
+        else:
+            x_hat = self.rescale.reverse(x_hat_centered)
         x_hat = np.clip(x_hat, self.min_support, self.max_support)
         return x_hat.squeeze()
     
@@ -308,7 +429,10 @@ class NFNull():
         """
         
         if self.features > 1:
-            raise NotImplementedError('Integration over >1 features not yet supported, please use nfnull.sample() and define an integration scheme.')
+            raise NotImplementedError(
+                'Integration over >1 features not yet supported, please use nfnull.sample() '
+                'and define an integration scheme.'
+                )
         if greater_than:
             return (np.sum(self.sample(n) > x) + 1)/(n + 1)
         else:
