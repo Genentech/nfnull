@@ -445,7 +445,7 @@ class NFNull():
             number of samples from flow with which to estimate CDF
         context : tensor, optional
             Context variables for conditional CDF estimation. If None and model was trained
-            with context, uses first training context point.
+            with context, uses all training context points and averages the result.
 
         Returns
         -------
@@ -453,13 +453,29 @@ class NFNull():
             CDF evaluated along points
         """
         if hasattr(self, 'training_context') and context is None:
-            # Use first training context point if no context provided
-            context = self.training_context[0:1]
+            # Use all training context points and average the results
+            all_cdfs = []
+            for ctx in self.training_context:
+                ctx_reshaped = ctx.reshape(1, -1)
+                x = self.sample(n, context=ctx_reshaped)
+                xcdf = np.zeros(self.grid.shape[0])
+                for i in range(self.grid.shape[0]):
+                    xcdf[i] = (np.sum(x < self.grid[i]) + 1)/(len(x) + 1)
+                all_cdfs.append(xcdf)
+            return np.mean(all_cdfs, axis=0)
+        
+        # Handle device for context
+        if context is not None and isinstance(context, torch.Tensor):
+            context = context.to(self.device)
         
         x = self.sample(n, context=context)
-        xcdf = np.zeros(self.grid.shape[0])
-        for i in range(self.grid.shape[0]):
-            xcdf[i] = (np.sum(x < self.grid[i]) + 1)/(len(x) + 1)
+        
+        # Convert grid to numpy if it's a tensor for comparison
+        grid_np = self.grid.cpu().numpy() if isinstance(self.grid, torch.Tensor) else self.grid
+        
+        xcdf = np.zeros(len(grid_np))
+        for i in range(len(grid_np)):
+            xcdf[i] = (np.sum(x < grid_np[i]) + 1)/(len(x) + 1)
 
         return xcdf
     
@@ -497,7 +513,9 @@ class NFNull():
         x_hat : array
             n samples from flow
         """
-        if context is not None:
+        # Handle device for context
+        if context is not None and isinstance(context, torch.Tensor):
+            context = context.to(self.device)
             x_hat_centered = self.flow(context).sample((n,)).detach().cpu().numpy()
         else:
             x_hat_centered = self.flow().sample((n,)).detach().cpu().numpy()
@@ -506,7 +524,12 @@ class NFNull():
             x_hat = x_hat_centered
         else:
             x_hat = self.rescale.reverse(x_hat_centered)
-        x_hat = np.clip(x_hat, self.min_support, self.max_support)
+            
+        # Convert min/max support to numpy if they're tensors
+        min_support = self.min_support.cpu().numpy() if isinstance(self.min_support, torch.Tensor) else self.min_support
+        max_support = self.max_support.cpu().numpy() if isinstance(self.max_support, torch.Tensor) else self.max_support
+        
+        x_hat = np.clip(x_hat, min_support, max_support)
         return x_hat.squeeze()
     
     def p_value(self, x, greater_than=True, n=100000000, context=None):
