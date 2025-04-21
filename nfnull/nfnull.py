@@ -347,10 +347,14 @@ class NFNull():
                     x_batch = batch[0]
                     loss = -flow().log_prob(x_batch).mean()
                 
-                loss += reg_lambda * torch.tensor(
-                    [torch.sum(t**2) for t in list(flow.parameters())]
-                ).sum()
-                loss -= tail_lambda * D.StudentT(df=t_df).log_prob(x_batch).sum()
+                if reg_lambda > 0:
+                    loss += reg_lambda * torch.tensor(
+                        [torch.sum(t**2) for t in list(flow.parameters())]
+                    ).sum()
+                
+                if tail_lambda > 0 and t_df > 0:  # Only add t-distribution term if both parameters are positive
+                    loss -= tail_lambda * D.StudentT(df=t_df).log_prob(x_batch).sum()
+                
                 loss.backward()    
                 optimizer.step()
                 optimizer.zero_grad()    
