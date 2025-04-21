@@ -241,6 +241,8 @@ class NFNull():
         sample new data points from trained flow
     p_value
         computes the tail probability for a data point
+    to(device)
+        move model to specified device
     """
     
     def __init__(
@@ -251,39 +253,70 @@ class NFNull():
     ):
         self.x = x
         if not prescaled:
-          self.rescale = Rescale(x)        
+            self.rescale = Rescale(x)
         self.features = features
-        self.mu_x = self.x.mean()
-        self.std_x = self.x.std()
-        self.min_support = np.array(min_support)
-        self.max_support = np.array(max_support)
-        self.min_grid = np.array(min_grid)
-        self.max_grid = np.array(max_grid)
-        self.grid = grid        
-        self.grid_points = grid_points
         
-        # Flow selection
+        # Handle device-specific operations
+        if isinstance(x, torch.Tensor):
+            self.device = x.device
+            self.mu_x = x.mean().item()
+            self.std_x = x.std().item()
+            self.min_support = torch.tensor(min_support, device=self.device)
+            self.max_support = torch.tensor(max_support, device=self.device)
+        else:
+            self.device = torch.device('cpu')
+            self.mu_x = np.mean(x)
+            self.std_x = np.std(x)
+            self.min_support = np.array(min_support)
+            self.max_support = np.array(max_support)
+        
+        # Flow selection - move to correct device
         if flow == 'NSF':
             self.flow = ExtendedNSF(
                 features=features, context=context,
                 transforms=transforms, hidden_features=hidden_features, 
                 bins=bins, passes=passes
-            )
+            ).to(self.device)
         elif flow == 'TNSF':
             self.flow = TNSF(
                 features=features, context=context,
                 transforms=transforms, hidden_features=hidden_features, 
                 bins=bins, nu=nu
-            )
+            ).to(self.device)
         else:
-            self.flow = flow
-            
+            self.flow = flow.to(self.device)
+        
+        # Grid setup
         if min_grid is None:
-            self.min_grid = np.maximum((x.min() - 5*self.std_x), self.min_support)
-            self.max_grid = np.minimum((x.max() + 5*self.std_x), self.max_support)
+            if isinstance(x, torch.Tensor):
+                self.min_grid = torch.maximum(
+                    x.min() - 5*self.std_x,
+                    self.min_support
+                )
+                self.max_grid = torch.minimum(
+                    x.max() + 5*self.std_x,
+                    self.max_support
+                )
+            else:
+                self.min_grid = np.maximum(
+                    np.min(x) - 5*self.std_x,
+                    self.min_support
+                )
+                self.max_grid = np.minimum(
+                    np.max(x) + 5*self.std_x,
+                    self.max_support
+                )
+        
         if (features == 1) and (self.grid is None):
-            one_d_space = np.linspace(self.min_grid, self.max_grid, self.grid_points)            
-            self.grid = one_d_space            
+            if isinstance(x, torch.Tensor):
+                self.grid = torch.linspace(
+                    self.min_grid, self.max_grid, grid_points, 
+                    device=self.device
+                )
+            else:
+                self.grid = np.linspace(self.min_grid, self.max_grid, grid_points)
+        
+        self.grid_points = grid_points
         self.pdf = None
         self.cdf = None
         self.z = None
@@ -376,16 +409,32 @@ class NFNull():
         
         if self.features == 1:
             if context is not None:
-                # Use first context point for PDF estimation
-                test_context = context[0:1]
-                log_pdfs = self.flow(test_context).log_prob(grid_centered.reshape(self.grid_points, 1))
-                self.cdf = self.get_cdf(n=self.grid_points, context=test_context)
+                # For conditional models, compute PDF and CDF for each context point
+                log_pdfs = []
+                cdfs = []
+                for ctx in context:
+                    ctx_reshaped = ctx.reshape(1, -1)  # reshape to (1, context_dim)
+                    # Compute PDF
+                    log_pdf = self.flow(ctx_reshaped).log_prob(grid_centered.reshape(self.grid_points, 1))
+                    log_pdfs.append(log_pdf)
+                    # Compute CDF
+                    cdf = self.get_cdf(n=self.grid_points, context=ctx_reshaped)
+                    cdfs.append(cdf)
+                
+                # Store all conditional PDFs
+                log_pdfs = torch.stack(log_pdfs)  # shape: (n_contexts, grid_points)
+                pdfs = torch.exp(log_pdfs).detach().cpu().numpy()
+                # Apply smoothing to each conditional PDF
+                smoothed_pdfs = np.array([uniform_filter1d(pdf, size=500) for pdf in pdfs])
+                self.pdf = smoothed_pdfs
+                
+                # Store all conditional CDFs
+                self.cdf = np.array(cdfs)  # shape: (n_contexts, grid_points)
             else:
                 log_pdfs = self.flow().log_prob(grid_centered.reshape(self.grid_points, 1))
+                pdfs = uniform_filter1d(torch.exp(log_pdfs).detach().cpu().numpy(), size=500)
+                self.pdf = pdfs
                 self.cdf = self.get_cdf(n=self.grid_points)
-            
-            pdfs = uniform_filter1d(torch.exp(log_pdfs).detach().cpu().numpy(), size=500)
-            self.pdf = pdfs
 
     def get_cdf(self, n=int(1e5), context=None):
         """Returns CDF
@@ -489,4 +538,14 @@ class NFNull():
             return (np.sum(self.sample(n, context=context) > x) + 1)/(n + 1)
         else:
             return (np.sum(self.sample(n, context=context) < x) + 1)/(n + 1)
+        
+    def to(self, device):
+        """Move model to specified device"""
+        self.device = device
+        self.flow = self.flow.to(device)
+        if isinstance(self.x, torch.Tensor):
+            self.x = self.x.to(device)
+        if isinstance(self.grid, torch.Tensor):
+            self.grid = self.grid.to(device)
+        return self
         
