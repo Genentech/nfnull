@@ -250,7 +250,8 @@ class NFNull():
         prescaled=True, nu=8.0
     ):
         self.x = x
-        self.rescale = Rescale(x)        
+        if not prescaled:
+          self.rescale = Rescale(x)        
         self.features = features
         self.mu_x = self.x.mean()
         self.std_x = self.x.std()
