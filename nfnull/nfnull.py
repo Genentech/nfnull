@@ -306,7 +306,7 @@ class NFNull():
                     np.max(x) + 5*self.std_x,
                     self.max_support
                 )
-        
+        self.grid = grid
         if (features == 1) and (self.grid is None):
             if isinstance(x, torch.Tensor):
                 self.grid = torch.linspace(
