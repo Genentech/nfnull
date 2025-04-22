@@ -444,7 +444,7 @@ class NFNull():
                 self.pdf = pdfs
                 self.cdf = self.get_cdf(n=self.grid_points)
 
-    def get_cdf(self, n=int(1e5), context=None):
+    def get_cdf(self, n=10000, context=None):
         """Returns CDF
 
         Parameters
@@ -506,7 +506,7 @@ class NFNull():
             return self.flow(context).log_prob(x)
         return self.flow().log_prob(x)
 
-    def sample(self, n=100000000, context=None):
+    def sample(self, n=10000, context=None, batch_size=1000000):
         """Samples points from flow
 
         Parameters
@@ -515,6 +515,8 @@ class NFNull():
             number of samples
         context : tensor, optional
             Context variables for conditional sampling
+        batch_size : int
+            maximum number of samples to generate at once to avoid memory issues
 
         Returns
         -------
@@ -524,9 +526,24 @@ class NFNull():
         # Handle device for context
         if context is not None and isinstance(context, torch.Tensor):
             context = context.to(self.device)
-            x_hat_centered = self.flow(context).sample((n,)).detach().cpu().numpy()
-        else:
-            x_hat_centered = self.flow().sample((n,)).detach().cpu().numpy()
+        
+        # Generate samples in batches to avoid memory issues
+        samples = []
+        remaining = n
+        
+        while remaining > 0:
+            current_batch_size = min(batch_size, remaining)
+            
+            if context is not None:
+                batch_samples = self.flow(context).sample((current_batch_size,)).detach().cpu().numpy()
+            else:
+                batch_samples = self.flow().sample((current_batch_size,)).detach().cpu().numpy()
+            
+            samples.append(batch_samples)
+            remaining -= current_batch_size
+        
+        # Concatenate all batches
+        x_hat_centered = np.concatenate(samples, axis=0)
         
         if self.prescaled:
             x_hat = x_hat_centered
@@ -540,7 +557,7 @@ class NFNull():
         x_hat = np.clip(x_hat, min_support, max_support)
         return x_hat.squeeze()
     
-    def p_value(self, x, greater_than=True, n=100000000, context=None):
+    def p_value(self, x, greater_than=True, n=1000000, context=None, batch_size=1000000):
         """Samples points from flow to compute tail probability
 
         Parameters
@@ -553,6 +570,8 @@ class NFNull():
             number of samples from flow for computing p-value
         context : tensor, optional
             Context variables for conditional sampling
+        batch_size : int
+            maximum number of samples to generate at once to avoid memory issues
 
         Returns
         -------
@@ -565,10 +584,26 @@ class NFNull():
                 'Integration over >1 features not yet supported, please use nfnull.sample() '
                 'and define an integration scheme.'
                 )
-        if greater_than:
-            return (np.sum(self.sample(n, context=context) > x) + 1)/(n + 1)
-        else:
-            return (np.sum(self.sample(n, context=context) < x) + 1)/(n + 1)
+            
+        # Generate samples in batches and count
+        count = 0
+        total = 0
+        remaining = n
+        
+        while remaining > 0:
+            current_batch_size = min(batch_size, remaining)
+            samples = self.sample(current_batch_size, context=context)
+            
+            if greater_than:
+                count += np.sum(samples > x)
+            else:
+                count += np.sum(samples < x)
+            
+            total += len(samples)
+            remaining -= current_batch_size
+        
+        # Add 1 to numerator and denominator for Bayesian smoothing
+        return (count + 1) / (total + 1)
         
     def to(self, device):
         """Move model to specified device"""
