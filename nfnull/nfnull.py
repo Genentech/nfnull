@@ -417,32 +417,23 @@ class NFNull():
         
         if self.features == 1:
             if context is not None:
-                # For conditional models, compute PDF and CDF for each context point
+                # For conditional models, compute PDF for each context point
                 log_pdfs = []
-                cdfs = []
                 for ctx in context:
-                    ctx_reshaped = ctx.reshape(1, -1)  # reshape to (1, context_dim)
-                    # Compute PDF
+                    ctx_reshaped = ctx.reshape(1, -1)
                     log_pdf = self.flow(ctx_reshaped).log_prob(grid_centered.reshape(self.grid_points, 1))
                     log_pdfs.append(log_pdf)
-                    # Compute CDF
-                    cdf = self.get_cdf(n=self.grid_points, context=ctx_reshaped)
-                    cdfs.append(cdf)
                 
                 # Store all conditional PDFs
-                log_pdfs = torch.stack(log_pdfs)  # shape: (n_contexts, grid_points)
+                log_pdfs = torch.stack(log_pdfs)
                 pdfs = torch.exp(log_pdfs).detach().cpu().numpy()
                 # Apply smoothing to each conditional PDF
                 smoothed_pdfs = np.array([uniform_filter1d(pdf, size=500) for pdf in pdfs])
                 self.pdf = smoothed_pdfs
-                
-                # Store all conditional CDFs
-                self.cdf = np.array(cdfs)  # shape: (n_contexts, grid_points)
             else:
                 log_pdfs = self.flow().log_prob(grid_centered.reshape(self.grid_points, 1))
                 pdfs = uniform_filter1d(torch.exp(log_pdfs).detach().cpu().numpy(), size=500)
                 self.pdf = pdfs
-                self.cdf = self.get_cdf(n=self.grid_points)
 
     def get_cdf(self, n=10000, context=None):
         """Returns CDF
@@ -452,25 +443,24 @@ class NFNull():
         n : int
             number of samples from flow with which to estimate CDF
         context : tensor, optional
-            Context variables for conditional CDF estimation. If None and model was trained
-            with context, uses all training context points and averages the result.
+            Context variables for conditional CDF estimation. Must be provided if model was trained
+            with context.
 
         Returns
         -------
         xcdf : array
             CDF evaluated along points
+
+        Raises
+        ------
+        ValueError
+            If the model was trained with context but no context is provided
         """
         if hasattr(self, 'training_context') and context is None:
-            # Use all training context points and average the results
-            all_cdfs = []
-            for ctx in self.training_context:
-                ctx_reshaped = ctx.reshape(1, -1)
-                x = self.sample(n, context=ctx_reshaped)
-                xcdf = np.zeros(self.grid.shape[0])
-                for i in range(self.grid.shape[0]):
-                    xcdf[i] = (np.sum(x < self.grid[i]) + 1)/(len(x) + 1)
-                all_cdfs.append(xcdf)
-            return np.mean(all_cdfs, axis=0)
+            raise ValueError(
+                "This model was trained with context, but no context was provided for CDF estimation. "
+                "Please provide a specific context vector."
+            )
         
         # Handle device for context
         if context is not None and isinstance(context, torch.Tensor):
