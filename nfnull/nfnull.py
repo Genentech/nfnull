@@ -324,7 +324,8 @@ class NFNull():
 
     def fit_pdf(
         self, batch_size=64, lr=1e-2, n_iter=1000, verbose=False, tol=1e-4, reg_lambda=0,
-        tail_lambda=0, t_df=0, weight_decay=1e-3, context=None, make_grid_estimator=False
+        tail_lambda=0, t_df=0, weight_decay=1e-3, context=None, make_grid_estimator=False,
+        patience=3
     ):
         """Fits Gaussian normalizing flow, which learns a density function.
 
@@ -350,6 +351,8 @@ class NFNull():
             Context variables for conditional density estimation
         make_grid_estimator : bool, optional
             whether to create a grid-based density estimator after training (can be memory intensive)
+        patience : int
+            number of epochs without improvement before stopping
         """
         # Initialize self.z regardless of prescaling
         if self.prescaled:
@@ -369,6 +372,8 @@ class NFNull():
         trainloader = data.DataLoader(trainset, batch_size=batch_size, shuffle=True)
         optimizer = torch.optim.Adam(flow.parameters(), lr=lr, weight_decay=weight_decay)
         old_loss = float('inf')
+        best_loss = float('inf')
+        patience_counter = 0
         
         for epoch in range(n_iter):
             losses = []    
@@ -385,7 +390,7 @@ class NFNull():
                         [torch.sum(t**2) for t in list(flow.parameters())]
                     ).sum()
                 
-                if tail_lambda > 0 and t_df > 0:  # Only add t-distribution term if both parameters are positive
+                if tail_lambda > 0 and t_df > 0:
                     loss -= tail_lambda * D.StudentT(df=t_df).log_prob(x_batch).sum()
                 
                 loss.backward()    
@@ -397,16 +402,20 @@ class NFNull():
             mean_epoch_loss = torch.stack(losses).mean()
             
             if verbose:
-                print(f'Epoch {epoch}: mean loss = {mean_epoch_loss.item()}, old_loss = {old_loss}')
-                print(f'Difference: {torch.abs(mean_epoch_loss - old_loss).item()}, tol: {tol}')
+                print(f'Epoch {epoch}: mean loss = {mean_epoch_loss.item()}, best = {best_loss}')
+                print(f'Patience counter: {patience_counter}/{patience}')
             
-            # Check for early stopping using mean epoch loss
-            if torch.abs(mean_epoch_loss - old_loss) < tol:
-                if verbose:
-                    print(f"Early stopping at epoch {epoch}")
-                break
+            # Check if loss improved
+            if mean_epoch_loss < best_loss - tol:
+                best_loss = mean_epoch_loss.item()
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    if verbose:
+                        print(f"Early stopping at epoch {epoch} due to no improvement for {patience} epochs")
+                    break
             
-            # Update old_loss with mean epoch loss
             old_loss = mean_epoch_loss.item()
         
         self.flow = flow
