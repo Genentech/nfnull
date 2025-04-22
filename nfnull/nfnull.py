@@ -393,14 +393,22 @@ class NFNull():
                 optimizer.zero_grad()    
                 losses.append(loss.detach())    
             
-            losses = torch.stack(losses)
-            if verbose & (epoch % 100 == 0):
-                print(f'({epoch})', losses.mean().item(), '±', losses.std().item())
-            if (torch.abs(loss - old_loss)) < tol:
-                break
-            else:
-                old_loss = loss
+            # Calculate mean loss for this epoch
+            mean_epoch_loss = torch.stack(losses).mean()
             
+            if verbose:
+                print(f'Epoch {epoch}: mean loss = {mean_epoch_loss.item()}, old_loss = {old_loss}')
+                print(f'Difference: {torch.abs(mean_epoch_loss - old_loss).item()}, tol: {tol}')
+            
+            # Check for early stopping using mean epoch loss
+            if torch.abs(mean_epoch_loss - old_loss) < tol:
+                if verbose:
+                    print(f"Early stopping at epoch {epoch}")
+                break
+            
+            # Update old_loss with mean epoch loss
+            old_loss = mean_epoch_loss.item()
+        
         self.flow = flow
         if self.prescaled:
             grid_centered = torch.tensor(self.grid)

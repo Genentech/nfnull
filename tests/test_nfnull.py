@@ -25,7 +25,7 @@ class TestNFNull(unittest.TestCase):
         )
         
         # Fit with fewer iterations for testing
-        model.fit_pdf(n_iter=1000, verbose=False)
+        model.fit_pdf(n_iter=1000, verbose=True)
         
         # Test that we can generate samples
         samples = model.sample(n=100)
@@ -58,7 +58,7 @@ class TestNFNull(unittest.TestCase):
         )
         
         # Fit with fewer iterations for testing
-        model.fit_pdf(n_iter=1000, verbose=False)
+        model.fit_pdf(n_iter=1000, verbose=True)
         
         # Test that we can generate samples
         samples = model.sample(n=100)
