@@ -324,11 +324,9 @@ class NFNull():
 
     def fit_pdf(
         self, batch_size=64, lr=1e-2, n_iter=1000, verbose=False, tol=1e-4, reg_lambda=0,
-        tail_lambda=0, t_df=0, weight_decay=1e-3, context=None
+        tail_lambda=0, t_df=0, weight_decay=1e-3, context=None, make_grid_estimator=False
     ):
-        """Fits Gaussian normalizing flow, which learns a density function. Regularization options
-           include l2 penalty on parameters, t-distribution PDF (to encourage longer tails)
-           and weight decay
+        """Fits Gaussian normalizing flow, which learns a density function.
 
         Parameters
         ----------
@@ -350,6 +348,8 @@ class NFNull():
             number of degrees of freedom for T prior
         context : array-like, optional
             Context variables for conditional density estimation
+        make_grid_estimator : bool, optional
+            whether to create a grid-based density estimator after training (can be memory intensive)
         """
         # Initialize self.z regardless of prescaling
         if self.prescaled:
@@ -415,25 +415,43 @@ class NFNull():
         else:
             grid_centered = torch.tensor(self.rescale.forward(self.grid))
         
-        if self.features == 1:
+        # Only create grid estimator if requested
+        if make_grid_estimator and self.features == 1:
+            if self.prescaled:
+                grid_centered = torch.tensor(self.grid, device='cpu')
+            else:
+                grid_centered = torch.tensor(self.rescale.forward(self.grid), device='cpu')
+            
             if context is not None:
-                # For conditional models, compute PDF for each context point
+                # For conditional models, compute grid estimates for each context point
                 log_pdfs = []
                 for ctx in context:
-                    ctx_reshaped = ctx.reshape(1, -1)
-                    log_pdf = self.flow(ctx_reshaped).log_prob(grid_centered.reshape(self.grid_points, 1))
+                    # Move context to device, compute density, then move results back to CPU
+                    ctx_reshaped = ctx.reshape(1, -1).to(self.device)
+                    with torch.no_grad():  # No need to track gradients for inference
+                        log_pdf = self.flow(ctx_reshaped).log_prob(
+                            grid_centered.reshape(self.grid_points, 1).to(self.device)
+                        ).cpu()
                     log_pdfs.append(log_pdf)
+                    # Clear GPU cache after each iteration
+                    torch.cuda.empty_cache()
                 
-                # Store all conditional PDFs
+                # Store all conditional grid estimates
                 log_pdfs = torch.stack(log_pdfs)
-                pdfs = torch.exp(log_pdfs).detach().cpu().numpy()
-                # Apply smoothing to each conditional PDF
-                smoothed_pdfs = np.array([uniform_filter1d(pdf, size=500) for pdf in pdfs])
-                self.pdf = smoothed_pdfs
+                pdfs = torch.exp(log_pdfs).numpy()
+                # Apply smoothing to each estimate
+                self.pdf = np.array([uniform_filter1d(pdf, size=500) for pdf in pdfs])
             else:
-                log_pdfs = self.flow().log_prob(grid_centered.reshape(self.grid_points, 1))
-                pdfs = uniform_filter1d(torch.exp(log_pdfs).detach().cpu().numpy(), size=500)
+                # For unconditional model
+                with torch.no_grad():
+                    log_pdfs = self.flow().log_prob(
+                        grid_centered.reshape(self.grid_points, 1).to(self.device)
+                    ).cpu()
+                pdfs = uniform_filter1d(torch.exp(log_pdfs).numpy(), size=500)
                 self.pdf = pdfs
+                torch.cuda.empty_cache()
+        else:
+            self.pdf = None
 
     def get_cdf(self, n=10000, context=None):
         """Returns CDF
