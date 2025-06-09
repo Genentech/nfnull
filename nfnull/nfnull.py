@@ -325,7 +325,7 @@ class NFNull():
     def fit_pdf(
         self, batch_size=64, lr=1e-2, n_iter=1000, verbose=False, tol=1e-4, reg_lambda=0,
         tail_lambda=0, t_df=0, weight_decay=1e-3, context=None, make_grid_estimator=False,
-        patience=3
+        patience=10
     ):
         """Fits Gaussian normalizing flow, which learns a density function.
 
