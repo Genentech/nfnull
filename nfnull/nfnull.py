@@ -62,7 +62,9 @@ class DiagStudentT(Independent):
     """Multivariate Student-T distribution with diagonal covariance matrix"""
     def __init__(self, loc=0., scale=1., ndims=1, nu=5.0):
         self.nu = nu
-        super().__init__(StudentT(nu, loc, scale), int(ndims))
+        # Expand base distribution to match desired dimensions
+        base_dist = StudentT(nu, loc, scale).expand((ndims,))
+        super().__init__(base_dist, 1)
 
     def __repr__(self) -> str:
         return "Diag" + repr(self.base_dist)
@@ -169,8 +171,8 @@ class Rescale():
     """     
     
     def __init__(self, x):
-        self.mean_x = np.mean(x)
-        self.std_x = np.std(x) 
+        self.mean_x = np.mean(x, axis=0)
+        self.std_x = np.std(x, axis=0)
         
     def forward(self, x):
         z = (x - self.mean_x) / self.std_x
@@ -259,14 +261,14 @@ class NFNull():
         # Handle device-specific operations
         if isinstance(x, torch.Tensor):
             self.device = x.device
-            self.mu_x = x.mean().item()
-            self.std_x = x.std().item()
+            self.mu_x = np.mean(x, axis=0)
+            self.std_x = np.std(x, axis=0)
             self.min_support = torch.tensor(min_support, device=self.device)
             self.max_support = torch.tensor(max_support, device=self.device)
         else:
             self.device = torch.device('cpu')
-            self.mu_x = np.mean(x)
-            self.std_x = np.std(x)
+            self.mu_x = np.mean(x, axis=0)
+            self.std_x = np.std(x, axis=0)
             self.min_support = np.array(min_support)
             self.max_support = np.array(max_support)
         
@@ -342,7 +344,7 @@ class NFNull():
         tol : float
             tolerance for early stopping
         reg_lambda : float
-            magnitude of L1 penalty
+            magnitude of L2 penalty
         tail_lambda : float
             scaling factor for T prior contribution to loss
         t_df : int
@@ -356,9 +358,9 @@ class NFNull():
         """
         # Initialize self.z regardless of prescaling
         if self.prescaled:
-            self.z = torch.tensor(self.x, dtype=torch.float32).reshape(-1, 1)
+            self.z = torch.tensor(self.x, dtype=torch.float32).reshape(-1, self.features)
         else:
-            self.z = torch.tensor(self.rescale.forward(self.x), dtype=torch.float32).reshape(-1, 1)
+            self.z = torch.tensor(self.rescale.forward(self.x), dtype=torch.float32).reshape(-1, self.features)
         
         flow = self.flow
         
@@ -419,10 +421,15 @@ class NFNull():
             old_loss = mean_epoch_loss.item()
         
         self.flow = flow
-        if self.prescaled:
-            grid_centered = torch.tensor(self.grid)
+        
+        # Only process grid if it exists (1D case only)
+        if self.grid is not None:
+            if self.prescaled:
+                grid_centered = torch.tensor(self.grid)
+            else:
+                grid_centered = torch.tensor(self.rescale.forward(self.grid))
         else:
-            grid_centered = torch.tensor(self.rescale.forward(self.grid))
+            grid_centered = None
         
         # Only create grid estimator if requested
         if make_grid_estimator and self.features == 1:
@@ -482,7 +489,15 @@ class NFNull():
         ------
         ValueError
             If the model was trained with context but no context is provided
+        NotImplementedError
+            If called on multivariate data (features > 1)
         """
+        if self.features > 1:
+            raise NotImplementedError(
+                f"CDF estimation not supported for multivariate data (features={self.features}). "
+                "Use p_value() for multivariate tail probabilities, or sample() for empirical distributions."
+            )
+            
         if hasattr(self, 'training_context') and context is None:
             raise ValueError(
                 "This model was trained with context, but no context was provided for CDF estimation. "
@@ -572,15 +587,19 @@ class NFNull():
         max_support = self.max_support.cpu().numpy() if isinstance(self.max_support, torch.Tensor) else self.max_support
         
         x_hat = np.clip(x_hat, min_support, max_support)
-        return x_hat.squeeze()
+        if self.features == 1:
+            return x_hat.squeeze()
+        else:
+            return x_hat
     
     def p_value(self, x, greater_than=True, n=1000000, context=None, batch_size=1000000):
         """Samples points from flow to compute tail probability
 
         Parameters
         ----------
-        x : float
-            data point for estimating tail probability P(X <= x)
+        x : float or array-like
+            data point for estimating tail probability. For multivariate (features > 1), 
+            computes joint tail probability P(X1 >= x1 AND X2 >= x2 AND ... AND Xd >= xd)
         greater_than : bool
             computes tail probality as greater than (True) or less than (False)
         n : int
@@ -593,14 +612,8 @@ class NFNull():
         Returns
         -------
         p_value : float
-            tail probability P(X <= x) or P(X >= x)
+            tail probability P(X <= x) or P(X >= x). For multivariate, this is the joint probability.
         """
-        
-        if self.features > 1:
-            raise NotImplementedError(
-                'Integration over >1 features not yet supported, please use nfnull.sample() '
-                'and define an integration scheme.'
-                )
             
         # Generate samples in batches and count
         count = 0
@@ -612,9 +625,20 @@ class NFNull():
             samples = self.sample(current_batch_size, context=context)
             
             if greater_than:
-                count += np.sum(samples > x)
+                if self.features == 1:
+                    count += np.sum(samples >= x)
+                else:
+                    # Ensure x is proper shape for broadcasting
+                    x_array = np.asarray(x)
+                    comparison = samples >= x_array
+                    count += np.sum(np.all(comparison, axis=tuple(range(1, samples.ndim))))
             else:
-                count += np.sum(samples < x)
+                if self.features == 1:
+                    count += np.sum(samples <= x)
+                else:
+                    x_array = np.asarray(x)
+                    comparison = samples <= x_array
+                    count += np.sum(np.all(comparison, axis=tuple(range(1, samples.ndim))))
             
             total += len(samples)
             remaining -= current_batch_size
