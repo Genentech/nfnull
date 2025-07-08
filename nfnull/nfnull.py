@@ -233,7 +233,7 @@ class NFNull():
         self, x, flow='NSF', min_support=float('-inf'), max_support=float('inf'),
         features=1, context=0, transforms=2, hidden_features=(64, 64, 64, 64), bins=16,
         passes=0, min_grid=None, max_grid=None, grid=None, grid_points=100000,
-        prescaled=True, nu=8.0, bound=40.0, slope=1e-3
+        prescaled=True, nu=0.0, bound=8.0, slope=1e-4 # defaults from MonotonicRQSTransform
     ):
         self.x = x
         if not prescaled:
