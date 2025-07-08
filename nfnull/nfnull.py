@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import torch.utils.data as data
 import torch.distributions as D
+from functools import partial
 
 from torch import BoolTensor, LongTensor, Size, Tensor
 from torch.distributions import Distribution, Transform, constraints, StudentT, Independent
@@ -13,50 +14,6 @@ from scipy.ndimage import uniform_filter1d
 from zuko.transforms import MonotonicRQSTransform
 from zuko.flows import Flow, MaskedAutoregressiveTransform
 from zuko.lazy import UnconditionalDistribution
-
-class ExtendedMonotonicRQSTransform(MonotonicRQSTransform):
-    """Extends MonotonicRQSTransform to allow for larger domain without passing argument
-    """
-    domain = constraints.real
-    codomain = constraints.real
-    bijective = True
-    sign = +1
-
-    def __init__(
-        self,
-        widths: Tensor,
-        heights: Tensor,
-        derivatives: Tensor,
-        bound: float = 15.0,
-        slope: float = 1e-4,
-        **kwargs,
-    ):
-       super().__init__(
-           widths=widths, 
-           heights=heights, 
-           derivatives=derivatives, 
-           bound=bound, 
-           slope=slope, 
-           **kwargs,
-       )
-        
-class ExtendedNSF(zuko.flows.autoregressive.MAF):
-    """Wrapper to use ExtendedMonotonicRQSTransform
-    """
-    def __init__(
-        self,
-        features: int,
-        context: int = 0,
-        bins: int = 8,
-        **kwargs,
-    ):
-        super().__init__(
-            features=features,
-            context=context,
-            univariate=ExtendedMonotonicRQSTransform,
-            shapes=[(bins,), (bins,), (bins - 1,)],
-            **kwargs,
-        )
 
 class DiagStudentT(Independent):
     """Multivariate Student-T distribution with diagonal covariance matrix"""
@@ -103,20 +60,40 @@ class TMAF(Flow):
         nu: float = 8.,
         **kwargs,
     ):
+        # Extract spline-specific parameters from kwargs
+        univariate = kwargs.pop('univariate', None)
+        shapes = kwargs.pop('shapes', None)
+        
         orders = [
             torch.arange(features),
             torch.flipud(torch.arange(features)),
         ]
 
-        transforms = [
-            MaskedAutoregressiveTransform(
-                features=features,
-                context=context,
-                order=torch.randperm(features) if randperm else orders[i % 2],
-                **kwargs,
-            )
-            for i in range(transforms)
-        ]
+        # Create transforms with or without spline functionality
+        if univariate is not None and shapes is not None:
+            # TNSF case: Create spline transforms
+            transforms = [
+                MaskedAutoregressiveTransform(
+                    features=features,
+                    context=context,
+                    univariate=univariate,
+                    shapes=shapes,
+                    order=torch.randperm(features) if randperm else orders[i % 2],
+                    **kwargs,
+                )
+                for i in range(transforms)
+            ]
+        else:
+            # Standard TMAF case: Create basic autoregressive transforms
+            transforms = [
+                MaskedAutoregressiveTransform(
+                    features=features,
+                    context=context,
+                    order=torch.randperm(features) if randperm else orders[i % 2],
+                    **kwargs,
+                )
+                for i in range(transforms)
+            ]
 
         base = UnconditionalDistribution(
             DiagStudentT,
@@ -139,13 +116,18 @@ class TNSF(TMAF):
         transforms: int = 3,
         hidden_features: tuple = (64, 64, 64, 64),
         nu: float = 8.,
+        bound: float = 40.0,
+        slope: float = 1e-3,
         **kwargs,
     ):
+        # Create a partial function for MonotonicRQSTransform with bound and slope
+        RQSTransform = partial(MonotonicRQSTransform, bound=bound, slope=slope)
+        
         super().__init__(
             features=features,
             context=context,
             transforms=transforms,
-            univariate=ExtendedMonotonicRQSTransform,
+            univariate=RQSTransform,
             shapes=[(bins,), (bins,), (bins - 1,)],
             hidden_features=hidden_features,
             nu=nu,
@@ -251,7 +233,7 @@ class NFNull():
         self, x, flow='NSF', min_support=float('-inf'), max_support=float('inf'),
         features=1, context=0, transforms=2, hidden_features=(64, 64, 64, 64), bins=16,
         passes=0, min_grid=None, max_grid=None, grid=None, grid_points=100000,
-        prescaled=True, nu=8.0
+        prescaled=True, nu=8.0, bound=40.0, slope=1e-3
     ):
         self.x = x
         if not prescaled:
@@ -274,16 +256,23 @@ class NFNull():
         
         # Flow selection - move to correct device
         if flow == 'NSF':
-            self.flow = ExtendedNSF(
-                features=features, context=context,
-                transforms=transforms, hidden_features=hidden_features, 
-                bins=bins, passes=passes
+            # Create a partial function for MonotonicRQSTransform with bound and slope
+            RQSTransform = partial(MonotonicRQSTransform, bound=bound, slope=slope)
+            
+            self.flow = zuko.flows.autoregressive.MAF(
+                features=features, 
+                context=context,
+                transforms=transforms, 
+                hidden_features=hidden_features,
+                passes=passes,
+                univariate=RQSTransform,
+                shapes=[(bins,), (bins,), (bins - 1,)]
             ).to(self.device)
         elif flow == 'TNSF':
             self.flow = TNSF(
                 features=features, context=context,
                 transforms=transforms, hidden_features=hidden_features, 
-                bins=bins, nu=nu
+                bins=bins, nu=nu, bound=bound, slope=slope
             ).to(self.device)
         else:
             self.flow = flow.to(self.device)
