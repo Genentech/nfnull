@@ -528,25 +528,33 @@ class NFNull():
         return self.flow().log_prob(x)
 
     def sample(self, n=10000, context=None, batch_size=1000000):
-        """Samples points from flow
-
+        """Samples points from flow with true batched context support
+        
         Parameters
         ----------
         n : int
-            number of samples
+            Number of samples per group (if context is batched) or total samples
         context : tensor, optional
-            Context variables for conditional sampling
+            Context variables. If 2D with shape [num_groups, context_features],
+            generates n samples for each group using vectorized operations
         batch_size : int
-            maximum number of samples to generate at once to avoid memory issues
-
+            Maximum number of samples to generate at once per group
+            
         Returns
         -------
         x_hat : array
-            n samples from flow
+            Samples from flow. Shape depends on context:
+            - No context: [n, features] (or [n] if features=1)  
+            - Single context: [n, features] (or [n] if features=1)
+            - Batched context: [n, num_groups, features] (or [n, num_groups] if features=1)
         """
+        
         # Handle device for context
         if context is not None and isinstance(context, torch.Tensor):
             context = context.to(self.device)
+        
+        # Determine if we have batched contexts
+        is_batched = context is not None and context.ndim >= 2 and context.shape[0] > 1
         
         # Generate samples in batches to avoid memory issues
         samples = []
@@ -556,6 +564,7 @@ class NFNull():
             current_batch_size = min(batch_size, remaining)
             
             if context is not None:
+                # This handles both single and batched contexts via torch's broadcasting
                 batch_samples = self.flow(context).sample((current_batch_size,)).detach().cpu().numpy()
             else:
                 batch_samples = self.flow().sample((current_batch_size,)).detach().cpu().numpy()
@@ -563,77 +572,162 @@ class NFNull():
             samples.append(batch_samples)
             remaining -= current_batch_size
         
-        # Concatenate all batches
+        # Concatenate all batches along sample dimension
+        if not samples:
+            if is_batched:
+                empty_shape = (0, context.shape[0], self.features) if self.features > 1 else (0, context.shape[0])
+            else:
+                empty_shape = (0, self.features) if self.features > 1 else (0,)
+            return np.empty(empty_shape)
+        
         x_hat_centered = np.concatenate(samples, axis=0)
         
-        if self.prescaled:
-            x_hat = x_hat_centered
+        # Apply reverse scaling if needed
+        if not self.prescaled:
+            # Handle batched case - need to be careful about broadcasting
+            if is_batched and self.features > 1:
+                # Reshape for broadcasting: x_hat_centered is [n, num_groups, features]
+                original_shape = x_hat_centered.shape
+                x_hat_flat = x_hat_centered.reshape(-1, self.features)
+                x_hat_scaled = self.rescale.reverse(x_hat_flat)
+                x_hat = x_hat_scaled.reshape(original_shape)
+            else:
+                x_hat = self.rescale.reverse(x_hat_centered)
         else:
-            x_hat = self.rescale.reverse(x_hat_centered)
-            
-        # Convert min/max support to numpy if they're tensors
+            x_hat = x_hat_centered
+        
+        # Apply clipping
         min_support = self.min_support.cpu().numpy() if isinstance(self.min_support, torch.Tensor) else self.min_support
         max_support = self.max_support.cpu().numpy() if isinstance(self.max_support, torch.Tensor) else self.max_support
         
         x_hat = np.clip(x_hat, min_support, max_support)
+        
+        # Handle feature=1 case by squeezing last dimension only
         if self.features == 1:
-            return x_hat.squeeze()
-        else:
-            return x_hat
+            x_hat = x_hat.squeeze(-1)
+        
+        return x_hat
     
     def p_value(self, x, greater_than=True, n=1000000, context=None, batch_size=1000000):
-        """Samples points from flow to compute tail probability
-
+        """Samples points from flow to compute tail probability with true batched analysis
+        
         Parameters
         ----------
-        x : float or array-like
-            data point for estimating tail probability. For multivariate (features > 1), 
-            computes joint tail probability P(X1 >= x1 AND X2 >= x2 AND ... AND Xd >= xd)
+        x : float, array-like, or tensor
+            Data point(s) for estimating tail probability
         greater_than : bool
-            computes tail probality as greater than (True) or less than (False)
+            Computes tail probability as greater than (True) or less than (False)
         n : int
-            number of samples from flow for computing p-value
+            Number of samples from flow for computing p-value
         context : tensor, optional
-            Context variables for conditional sampling
+            Context variables. If batched, computes p-value for each group simultaneously
         batch_size : int
-            maximum number of samples to generate at once to avoid memory issues
-
+            Maximum number of samples to generate at once to avoid memory issues
+            
         Returns
         -------
-        p_value : float
-            tail probability P(X <= x) or P(X >= x). For multivariate, this is the joint probability.
+        p_value : float or array
+            Tail probability. If context is batched, returns array of p-values (one per group)
         """
-            
-        # Generate samples in batches and count
-        count = 0
-        total = 0
-        remaining = n
         
-        while remaining > 0:
-            current_batch_size = min(batch_size, remaining)
-            samples = self.sample(current_batch_size, context=context)
-            
-            if greater_than:
-                if self.features == 1:
-                    count += np.sum(samples >= x)
-                else:
-                    # Ensure x is proper shape for broadcasting
-                    x_array = np.asarray(x)
-                    comparison = samples >= x_array
-                    count += np.sum(np.all(comparison, axis=tuple(range(1, samples.ndim))))
-            else:
-                if self.features == 1:
-                    count += np.sum(samples <= x)
-                else:
-                    x_array = np.asarray(x)
-                    comparison = samples <= x_array
-                    count += np.sum(np.all(comparison, axis=tuple(range(1, samples.ndim))))
-            
-            total += len(samples)
-            remaining -= current_batch_size
+        # Handle device for context
+        if context is not None and isinstance(context, torch.Tensor):
+            context = context.to(self.device)
         
-        # Add 1 to numerator and denominator for Bayesian smoothing
-        return (count + 1) / (total + 1)
+        # Determine if we have batched contexts
+        is_batched = context is not None and context.ndim >= 2 and context.shape[0] > 1
+        
+        if is_batched:
+            num_groups = context.shape[0]
+            
+            # Handle x input for batched case
+            x_array = np.asarray(x)
+            if x_array.ndim == 0:  # Scalar x
+                if self.features == 1:
+                    x_broadcast = np.full(num_groups, x_array.item())
+                else:
+                    x_broadcast = np.tile(x_array, (num_groups, 1))
+            elif self.features == 1 and x_array.ndim == 1:
+                if len(x_array) != num_groups:
+                    raise ValueError(f"For batched context, x length ({len(x_array)}) "
+                                   f"must match number of groups ({num_groups}) or be scalar")
+                x_broadcast = x_array
+            elif self.features > 1:
+                if x_array.ndim == 1 and len(x_array) == self.features:
+                    x_broadcast = np.tile(x_array[None, :], (num_groups, 1))
+                elif x_array.ndim == 2 and x_array.shape == (num_groups, self.features):
+                    x_broadcast = x_array
+                else:
+                    raise ValueError(f"Invalid x shape for batched context")
+            
+            # Generate samples in batches for memory management, accumulate counts
+            counts = np.zeros(num_groups)
+            total = 0
+            remaining = n
+            
+            while remaining > 0:
+                current_batch_size = min(batch_size, remaining)
+                batch_samples = self.sample(current_batch_size, context=context)
+                
+                # batch_samples shape: [current_batch_size, num_groups] or [current_batch_size, num_groups, features]
+                
+                if self.features == 1:
+                    # batch_samples: [current_batch_size, num_groups], x_broadcast: [num_groups]
+                    if greater_than:
+                        comparison = batch_samples >= x_broadcast[None, :]
+                    else:
+                        comparison = batch_samples <= x_broadcast[None, :]
+                    # Sum over sample dimension, accumulate per group
+                    counts += np.sum(comparison, axis=0)
+                else:
+                    # batch_samples: [current_batch_size, num_groups, features]
+                    # x_broadcast: [num_groups, features]
+                    if greater_than:
+                        comparison = batch_samples >= x_broadcast[None, :, :]
+                    else:
+                        comparison = batch_samples <= x_broadcast[None, :, :]
+                    # For multivariate: all features must satisfy condition
+                    joint_comparison = np.all(comparison, axis=2)  # Shape: [current_batch_size, num_groups]
+                    counts += np.sum(joint_comparison, axis=0)
+                
+                total += current_batch_size
+                remaining -= current_batch_size
+            
+            # Bayesian smoothing per group
+            p_values = (counts + 1) / (total + 1)
+            return p_values
+        
+        else:
+            # Single context case - generate samples in batches for memory management
+            count = 0
+            total = 0
+            remaining = n
+            
+            while remaining > 0:
+                current_batch_size = min(batch_size, remaining)
+                batch_samples = self.sample(current_batch_size, context=context)
+                
+                # batch_samples will be [current_batch_size] or [current_batch_size, features] for single context
+                
+                if greater_than:
+                    if self.features == 1:
+                        count += np.sum(batch_samples >= x)
+                    else:
+                        x_array = np.asarray(x)
+                        comparison = batch_samples >= x_array
+                        count += np.sum(np.all(comparison, axis=1))
+                else:
+                    if self.features == 1:
+                        count += np.sum(batch_samples <= x)
+                    else:
+                        x_array = np.asarray(x)
+                        comparison = batch_samples <= x_array
+                        count += np.sum(np.all(comparison, axis=1))
+                
+                total += len(batch_samples)
+                remaining -= current_batch_size
+            
+            return (count + 1) / (total + 1)
         
     def to(self, device):
         """Move model to specified device"""
