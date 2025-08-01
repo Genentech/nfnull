@@ -494,8 +494,12 @@ class NFNull():
             )
         
         # Handle device for context
-        if context is not None and isinstance(context, torch.Tensor):
-            context = context.to(self.device)
+        if context is not None:
+            if isinstance(context, torch.Tensor):
+                context = context.to(self.device)
+            else:
+                # Convert numpy arrays or other array-like inputs to tensors
+                context = torch.tensor(context, dtype=torch.float32, device=self.device)
         
         x = self.sample(n, context=context)
         
@@ -550,8 +554,12 @@ class NFNull():
         """
         
         # Handle device for context
-        if context is not None and isinstance(context, torch.Tensor):
-            context = context.to(self.device)
+        if context is not None:
+            if isinstance(context, torch.Tensor):
+                context = context.to(self.device)
+            else:
+                # Convert numpy arrays or other array-like inputs to tensors
+                context = torch.tensor(context, dtype=torch.float32, device=self.device)
         
         # Determine if we have batched contexts
         is_batched = context is not None and context.ndim >= 2 and context.shape[0] > 1
@@ -631,8 +639,12 @@ class NFNull():
         """
         
         # Handle device for context
-        if context is not None and isinstance(context, torch.Tensor):
-            context = context.to(self.device)
+        if context is not None:
+            if isinstance(context, torch.Tensor):
+                context = context.to(self.device)
+            else:
+                # Convert numpy arrays or other array-like inputs to tensors
+                context = torch.tensor(context, dtype=torch.float32, device=self.device)
         
         # Determine if we have batched contexts
         is_batched = context is not None and context.ndim >= 2 and context.shape[0] > 1
@@ -711,14 +723,18 @@ class NFNull():
                 
                 if greater_than:
                     if self.features == 1:
-                        count += np.sum(batch_samples >= x)
+                        # Convert x to numpy array to handle tensor inputs
+                        x_array = np.asarray(x)
+                        count += np.sum(batch_samples >= x_array)
                     else:
                         x_array = np.asarray(x)
                         comparison = batch_samples >= x_array
                         count += np.sum(np.all(comparison, axis=1))
                 else:
                     if self.features == 1:
-                        count += np.sum(batch_samples <= x)
+                        # Convert x to numpy array to handle tensor inputs
+                        x_array = np.asarray(x)
+                        count += np.sum(batch_samples <= x_array)
                     else:
                         x_array = np.asarray(x)
                         comparison = batch_samples <= x_array
