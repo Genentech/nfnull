@@ -18,4 +18,28 @@ requires-python = ">=3.6"
 "Bug Tracker" = "https://github.com/Genentech/nfnull/issues"
 
 [tool.setuptools]
-packages = ["nfnull"] 
+packages = ["nfnull"]
+
+[project.optional-dependencies]
+dev = [
+    "black",
+]
+
+[tool.black]
+line-length = 88
+target-version = ['py38', 'py39', 'py310', 'py311', 'py312']
+include = '\.pyi?$'
+extend-exclude = '''
+# Exclude notebooks and other files
+/(
+  \.git
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+  | \.ipynb$
+)/
+''' 
