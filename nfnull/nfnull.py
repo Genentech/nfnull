@@ -380,19 +380,20 @@ class NFNull:
             number of epochs without improvement before stopping
         """
         # Initialize self.z regardless of prescaling
+        # Move to self.device for GPU/MPS support (backwards-compatible: defaults to CPU)
         if self.prescaled:
-            self.z = torch.tensor(self.x, dtype=torch.float32).reshape(
+            self.z = torch.tensor(self.x, dtype=torch.float32, device=self.device).reshape(
                 -1, self.features
             )
         else:
             self.z = torch.tensor(
-                self.rescale.forward(self.x), dtype=torch.float32
+                self.rescale.forward(self.x), dtype=torch.float32, device=self.device
             ).reshape(-1, self.features)
 
         flow = self.flow
 
         if context is not None:
-            context = torch.tensor(context, dtype=torch.float32)
+            context = torch.tensor(context, dtype=torch.float32, device=self.device)
             self.training_context = context  # Store training context
             trainset = data.TensorDataset(self.z, context)
         else:
@@ -420,7 +421,8 @@ class NFNull:
                     loss += (
                         reg_lambda
                         * torch.tensor(
-                            [torch.sum(t**2) for t in list(flow.parameters())]
+                            [torch.sum(t**2) for t in list(flow.parameters())],
+                            device=self.device
                         ).sum()
                     )
 
