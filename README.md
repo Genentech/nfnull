@@ -1,6 +1,6 @@
-# p-values for multimodal null distributions
+# tail integrals for multimodal distributions
 
-This repository is for exploring approximations to difficult-to-sample or -to-model null distributions of the sort encountered during Monte Carlo (MC) sampling. The focus is deriving an approximation to the CDF such that more precise p-values can be obtained than through direct MC sampling. Although built on PyTorch, we do not require GPU access.
+This repository is for exploring approximations to difficult-to-sample or -to-model distributions of the sort encountered during Monte Carlo (MC) sampling. The focus is deriving an approximation to the CDF such that more precise tail probabilities can be obtained than through direct MC sampling. A key inferential target is p-values in null hypothesis significance testing. Although built on PyTorch, we do not require GPU access.
 
 As we are not yet on PyPi, to install please follow this recipe:
 

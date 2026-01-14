@@ -578,23 +578,63 @@ class NFNull:
         return xcdf
 
     def log_prob(self, x, context=None):
-        """Returns log probability
+        """Returns log probability density at x.
+
+        When prescaled=False, this method properly handles the change of variables:
+        the flow learns p_Z(z) where z = (x - mu) / sigma, so we compute
+        log p_X(x) = log p_Z(z) - sum(log(sigma))
 
         Parameters
         ----------
-        x : float
-            data point to score
+        x : array-like or tensor
+            Data point(s) to score. Can be numpy array or torch tensor.
+            Shape should be (n_samples, features) or (features,) for single point.
         context : tensor, optional
             Context variables for conditional probability
 
         Returns
         -------
-        flow.log_prob : float
-            log of probability density function value for x
+        log_prob : tensor
+            Log probability density function value(s) for x
         """
+        # Convert to tensor if needed
+        if not isinstance(x, torch.Tensor):
+            x = torch.tensor(x, dtype=torch.float32, device=self.device)
+        else:
+            x = x.to(self.device)
+        
+        # Ensure 2D shape for consistent handling
+        original_shape = x.shape
+        if x.ndim == 1:
+            x = x.unsqueeze(0)
+        
+        # Apply rescaling if needed
+        if not self.prescaled and hasattr(self, 'rescale') and self.rescale is not None:
+            # Transform to standardized space: z = (x - mu) / sigma
+            mean_t = torch.tensor(self.rescale.mean_x, dtype=torch.float32, device=self.device)
+            std_t = torch.tensor(self.rescale.std_x, dtype=torch.float32, device=self.device)
+            z = (x - mean_t) / std_t
+            
+            # Jacobian correction: log|det(dz/dx)| = -sum(log(sigma))
+            # This is constant across samples, so we compute it once
+            jacobian_correction = -torch.sum(torch.log(std_t))
+        else:
+            z = x
+            jacobian_correction = 0.0
+        
+        # Compute log prob in the transformed space
         if context is not None:
-            return self.flow(context).log_prob(x)
-        return self.flow().log_prob(x)
+            log_prob_z = self.flow(context).log_prob(z)
+        else:
+            log_prob_z = self.flow().log_prob(z)
+        
+        # Apply change of variables: log p_X(x) = log p_Z(z) + log|det J|
+        log_prob_x = log_prob_z + jacobian_correction
+        
+        # Return same shape as input
+        if len(original_shape) == 1:
+            return log_prob_x.squeeze(0)
+        return log_prob_x
 
     def sample(self, n=10000, context=None, batch_size=1000000):
         """Samples points from flow with true batched context support
