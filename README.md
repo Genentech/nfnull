@@ -2,14 +2,10 @@
 
 This repository is for exploring approximations to difficult-to-sample or -to-model distributions of the sort encountered during Monte Carlo (MC) sampling. The focus is deriving an approximation to the CDF such that more precise tail probabilities can be obtained than through direct MC sampling. A key inferential target is p-values in null hypothesis significance testing. Although built on PyTorch, we do not require GPU access.
 
-As we are not yet on PyPi, to install please follow this recipe:
+### Installing and Running
 
 ```
-git clone git@github.com:Genentech/nfnull.git
-conda env -n 'nfnull' python=3.11.1
-conda activate nfnull
-pip install zuko torch torchaudio torchvision scipy numpy pandas
-pip install nfnull/NFNull
+pip install zuko torch torchaudio torchvision scipy numpy pandas nfnull
 ```
 
 You can then run in Python as follows:
@@ -56,8 +52,13 @@ Analytic p-value: 8.008668894725593e-43
 Empirical mean from samples 0.0
 Neural approx: 9.9999999e-09
 ```
+### Detailed Examples
 
-Calling from R, assuming you have named your Python environment 'nfnull':
+There are worked examples in [nfnull/notebooks](https://github.com/Genentech/nfnull/tree/main/nfnull/notebooks).
+
+### Calling from R
+
+Assuming you have named your Python environment 'nfnull':
 
 ```
 # Load the reticulate library and set up the Python environment
