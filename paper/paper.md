@@ -10,13 +10,12 @@ tags:
 authors:
   - name: Kipper Fletez-Brant
     corresponding: true
-    orcid: 0000-0000-0000-0000
+    orcid: 0000-0002-2817-1579
     affiliation: 1
   - name: Jason Xu
-    orcid: 0000-0000-0000-0000
     affiliation: 2
   - name: Tushar Bhangale
-    orcid: 0000-0000-0000-0000
+    orcid: 0000-0002-8233-9977
     affiliation: 1
 affiliations:
   - name: Department of Human Genetics, Genentech, Inc., United States
@@ -226,6 +225,38 @@ and $d = 5$ (bottom). The y-axis is capped at 30 across both panels for comparab
 the true GMM KL on the Banana exemplar at $d = 5$ is approximately $2 \times 10^{10}$.
 At $d = 2$ all methods perform well; at $d = 5$ the Banana distribution is the primary
 challenge for all model classes.\label{fig:kl}](figures/kl_divergences_d2_d5.png)
+
+# Research impact statement
+
+The simulation studies presented in this paper provide reproducible benchmarks
+across nine distribution families (three univariate, six multivariate at
+$d \in \{2, 5\}$), with all experiment code and data available in a companion
+repository. These benchmarks include quantitative comparisons against Gaussian
+mixture models and kernel density estimators on log-likelihood, two-sample
+Kolmogorov--Smirnov tests, and KL divergence, establishing the operating
+characteristics of neural spline flows for tail probability estimation across a
+range of distributional shapes including multimodality, skewness, asymmetric tail
+dependence, and nonlinear structure.
+
+Permutation-based hypothesis testing is widespread in genomics
+[@mc_genetics_1; @mc_genetics_2; @mc_genetics_3], where null distributions are
+defined implicitly by permutation procedures and cannot be expressed in closed
+form. Current practice either reports $p = 0$ when no permutation exceeds the
+observed statistic or fits a parametric tail model such as the generalized Pareto
+distribution [@perm_gpd]. `NFNull` provides a nonparametric alternative that
+learns the full null distribution from permutation samples, enabling continuous
+tail probability estimates without distributional assumptions. The conditional
+density estimation mode (via the `context` argument) further supports grouped
+analyses common in cell-type-specific enrichment testing, where a distinct null
+distribution must be estimated for each annotation or cell type.
+
+`NFNull` is released under the MIT license on the Genentech GitHub organization,
+is installable via `pip`, and includes an automated test suite covering
+univariate and multivariate density fitting, tail probability calibration across
+NSF and TNSF architectures, conditional density estimation, and batched context
+operations. The library is callable from R via `reticulate` [@r_lang], broadening
+its accessibility to the biostatistics community. Worked examples in Jupyter
+notebooks are included in the repository.
 
 # AI usage disclosure
 
